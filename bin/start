@@ -1,0 +1,106 @@
+#!/usr/bin/env php
+<?php
+
+use PHPHtmlParser\Dom;
+
+require_once dirname(__DIR__).'/vendor/autoload.php';
+
+
+$dom = new Dom();
+
+try {
+    $dom->load(file_get_contents('https://sklep.magorex.pl/'));
+    $categories = $dom->find('.tree')[0]->find('li');
+
+    $categories_list = [];
+    foreach ($categories as $category) {
+        $category_name = $category->find('a')[0]->find('span')->text; // category name
+        $category_link = $category->find('a')[0]->getAttribute('href'); // category link
+        $categories_list[] = [
+            'name' => $category_name,
+            'link' => $category_link
+        ];
+    }
+
+} catch (Exception $e) {
+    echo $e->getMessage() . PHP_EOL;
+    die();
+}
+
+
+$categories_list_with_products = [];
+foreach ($categories_list as $category) {
+    $dom->load(file_get_contents($category['link']));
+
+    preg_match('/z [0-9]* element&oacute;w/', $dom->find('.product-count')[0]->text, $matches);
+
+    if (isset($matches[0])) {
+        $products_count = (int)str_replace('z ', '', str_replace(' element&oacute;w', '', $matches[0]));
+    } else {
+        $products_count = 1;
+    }
+
+    $products = $dom->find('.product_list')->find('.product-name');
+
+    foreach ($products as $product) {
+        $categories_list_with_products[$category['name']][] = $product->getAttribute('href');
+    }
+
+    preg_match('/\/[0-9]*-/', $category['link'], $matches);
+    $category_id = str_replace(['/', '-'], '', $matches[0]);
+    if ($products_count > 12) {
+        $pages = ceil($products_count / 12);
+
+        for ($i = 2; $i <= $pages; $i++) {
+
+            // AJAX request
+            $dom->load(json_decode(file_get_contents('https://sklep.magorex.pl/modules/blocklayered/blocklayered-ajax.php?id_category_layered=' . $category_id . '&layered_price_slider=0_10000&orderby=name&orderway=asc&n=12&p=' . $i . '&_=1591153083684'))->productList);
+
+            $products = $dom->find('.product_list')->find('.product-name');
+
+            foreach ($products as $product) {
+                $categories_list_with_products[$category['name']][] = $product->getAttribute('href');
+            }
+        }
+    }
+
+}
+
+
+$result_products = [];
+foreach ($categories_list_with_products as $category => $products) {
+    foreach ($products as $product) {
+
+        $product_page = $dom->load(file_get_contents($product));
+        $product_info = $product_page->find('.pb-center-column');
+        $product_image = $product_page->find('#bigpic')->getAttribute('src');
+
+        $name = $product_info->find('h1')->text;
+        $product_references = $product_info->find('#product_reference');
+
+        $pinfo = [];
+        foreach ($product_references as $product_reference) {
+
+            if (in_array($product_reference->find('label')->text, ['Indeks: ', 'Jednostka: ', 'Identyfikator: '])) {
+                $pinfo[] = $product_reference->find('span')->text;
+            }
+        }
+        $pinfo[] = $product_info->find('#availability_statut')->text;
+
+        $prices = $product_page->find('.content_prices')->find('div')->find('div');
+
+        $pinfo[] = $prices[0]->text . ' | ' . $prices[1]->text;
+        $pinfo[] = $product_image;
+
+        $result_products[] = array_merge([$category, $name], $pinfo);
+    }
+}
+
+$fp = fopen('products_list.csv', 'w');
+fputcsv($fp, ['Category', 'Product name', 'Index', 'Unit', 'ID', 'Availability', 'Image URL']);
+
+foreach ($result_products as $result_product) {
+    fputcsv($fp, $result_product);
+}
+
+fclose($fp);
